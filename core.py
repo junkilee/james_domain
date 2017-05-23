@@ -110,34 +110,76 @@ class Ball:
       pygame.draw.circle(screen, Color.pink, self.pos, ball_diameter, 0)
 
   def visualize(self, robot):
-    robot_pos, robot_heading = robot.get_pose()
-    x = self.pos[0] - robot_pos[0]
-    y = self.pos[1] - robot_pos[1]
-    angle = np.arctan2(y, x)
-    
-    xx = self.pos[0] + float(ball_diameter) / 2.0 * np.cos(angle + np.pi / 2.0) - robot_pos[0]
-    yy = self.pos[1] + float(ball_diameter) / 2.0 * np.sin(angle + np.pi / 2.0) - robot_pos[1]
-
-    angle_plus = np.arctan2(yy, xx)
-    angle_minus = angle - (angle_plus - angle)
-
-    angle_plus = reposition_angle(angle_plus - robot_heading)
-    angle_minus = reposition_angle(angle_minus - robot_heading)
-
     bits = np.zeros(ball_state_bit_size)
 
-    start_angle = - ball_detect_range / 2.0
-    interval = ball_detect_range / float(ball_state_bit_size)
-    # inclusive
-    for i in range(ball_state_bit_size):
-      s_angle = start_angle + i * interval
-      e_angle = start_angle + (i + 1) * interval
-      if overlap((angle_minus, angle_plus), (s_angle, e_angle)):
-        bits[i] = 1
+    if self.pos[0] >= 0:
+      robot_pos, robot_heading = robot.get_pose()
+      x = self.pos[0] - robot_pos[0]
+      y = self.pos[1] - robot_pos[1]
+      angle = np.arctan2(y, x)
+      
+      xx = self.pos[0] + float(ball_diameter) / 2.0 * np.cos(angle + np.pi / 2.0) - robot_pos[0]
+      yy = self.pos[1] + float(ball_diameter) / 2.0 * np.sin(angle + np.pi / 2.0) - robot_pos[1]
 
-    #print(self.name, angle_plus, angle_minus, start_angle, bits)
+      angle_plus = np.arctan2(yy, xx)
+      angle_minus = angle - (angle_plus - angle)
+
+      angle_plus = reposition_angle(angle_plus - robot_heading)
+      angle_minus = reposition_angle(angle_minus - robot_heading)
+
+      bits = np.zeros(ball_state_bit_size)
+
+      start_angle = - ball_detect_range / 2.0
+      interval = ball_detect_range / float(ball_state_bit_size)
+      # inclusive
+      for i in range(ball_state_bit_size):
+        s_angle = start_angle + i * interval
+        e_angle = start_angle + (i + 1) * interval
+        if overlap((angle_minus, angle_plus), (s_angle, e_angle)):
+          bits[i] = 1
+
+      #print(self.name, angle_plus, angle_minus, start_angle, bits)
     return bits
 
+def follow_reward(state, action):
+    # If no signal is firing in state, all actions except staying still are +1
+    if sum(state) == 0:
+        if action != 'stay':
+            return 1.0
+        else:
+            return -1.0
+
+    # If all signal bits are firing then we are as close to the ball as we should be
+    # Any further movement actions should be -1
+    if sum(state) == len(state):
+        if action != 'stay':
+            return -1.0
+        else:
+            return 1.0
+
+    mid = int(len(state) / 2)
+    # If more signal appears to the left than the right
+    if sum(state[:mid]) > sum(state[mid:]):
+        if action == 'leftturn':
+            return 1.0
+        else:
+            return -1.0
+    # If more signal appears to the right than the left
+    if sum(state[:mid]) < sum(state[mid:]):
+        if action == 'rightturn':
+            return 1.0
+        else:
+            return -1.0
+
+    #If there is only signal in the center of the robot's field of view
+    if sum(state[mid-1:mid+2]) > sum(state[:mid-1]) + sum(state[mid+2:]):
+        if action == 'forward':
+            return 1.0
+        else:
+            return -1.0
+
+    print 'State-action pair did not fall into any valid return condition!'
+    return 0.0
 
 class JamesEnv(gym.Env):
   metadata = {'render.modes': ['human']}
@@ -165,7 +207,6 @@ class JamesEnv(gym.Env):
     self.action_space = spaces.Discrete(nb_actions)
 
     self._reset()
-
 
   def _seed(self, seed=None):
     self.np_random, seed = seeding.np_random(seed)
@@ -211,6 +252,7 @@ class JamesEnv(gym.Env):
 
       self.pink_ball.set_position(self.human_pos)
       state = self.pink_ball.visualize(self.robot)
+      reward = follow_reward(state, action_names[action])
 
       self.clock.tick(game_fps_limit)
 
@@ -242,7 +284,7 @@ if __name__ == "__main__":
       sub_steps = 0
 
     s, r, done, info = env.step(a)
-    print(s)
+    print(s, r)
     env.render()
     total_reward += r
     steps += 1
