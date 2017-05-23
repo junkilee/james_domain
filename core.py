@@ -14,15 +14,20 @@ from Box2D.b2 import (edgeShape, circleShape, fixtureDef, polygonShape, revolute
 
 nb_actions = 4
 dimensions = 2
-action_names = ['forward', 'backward', 'leftturn', 'rightturn']
-action_specs = [[5., 0.], [-5., 0.], [0., np.pi / 9.], [0, - np.pi / 9.]]
+action_names = ['forward', 'stay', 'leftturn', 'rightturn']
+action_specs = [[5., 0.], [0., 0.], [0., np.pi / 9.], [0, - np.pi / 9.]]
 robot_diameter = 10
 robot_width = 0
 heading_length = 8
 heading_width = 2
 screen_size = screen_width, screen_height = 600, 500
 boundary = {'min':[50, 50], 'max':[550, 450]}
-game_fps_limit = 60
+game_fps_limit = 15
+
+ball_detect_range = np.pi / 4.0 # 45 degrees
+ball_state_bit_size = 5
+default_ball_distance = 50
+ball_diameter = 15
 
 class Color:
   black = 0, 0, 0
@@ -39,6 +44,9 @@ class Robot:
     self.y = y
     self.heading = heading
     self.diameter = robot_diameter
+
+  def get_pose(self):
+    return (self.pos, self.heading)
 
   def draw(self, screen):
     xx = (self.diameter + heading_length)* np.cos(self.heading)
@@ -66,6 +74,71 @@ class Robot:
     self.pos = (int(x), int(y))
     self.heading = heading
 
+def reposition_angle(angle):
+  a = angle
+  if a < 0:
+    a = np.pi * 2.0 + a
+  a = a % (2 * np.pi)
+  if a > np.pi:
+    a = a - np.pi * 2 
+  return a
+
+def overlap((a, b), (c, d)):
+  return (a >= c and a <= d) or (b >= c and b <= d) or (c >= a and c <= b) or (d >= a and d <= b)
+
+class Ball:
+  def __init__(self, name, robot):
+    robot_pos, robot_heading = robot.get_pose()
+
+    # first initialize a pink in front of a robot
+    x = robot_pos[0] + default_ball_distance * np.cos(robot_heading)
+    y = robot_pos[1] + default_ball_distance * np.sin(robot_heading)
+
+    self.name = name
+    self.pos = (x, y)
+    self.present = True
+
+  def set_position(self, pos):
+    if pos[0] < 0:
+      self.present = False
+    else:
+      self.present = True
+    self.pos = pos
+
+  def draw(self, screen):
+    if self.present:
+      pygame.draw.circle(screen, Color.pink, self.pos, ball_diameter, 0)
+
+  def visualize(self, robot):
+    robot_pos, robot_heading = robot.get_pose()
+    x = self.pos[0] - robot_pos[0]
+    y = self.pos[1] - robot_pos[1]
+    angle = np.arctan2(y, x)
+    
+    xx = self.pos[0] + float(ball_diameter) / 2.0 * np.cos(angle + np.pi / 2.0) - robot_pos[0]
+    yy = self.pos[1] + float(ball_diameter) / 2.0 * np.sin(angle + np.pi / 2.0) - robot_pos[1]
+
+    angle_plus = np.arctan2(yy, xx)
+    angle_minus = angle - (angle_plus - angle)
+
+    angle_plus = reposition_angle(angle_plus - robot_heading)
+    angle_minus = reposition_angle(angle_minus - robot_heading)
+
+    bits = np.zeros(ball_state_bit_size)
+
+    start_angle = - ball_detect_range / 2.0
+    interval = ball_detect_range / float(ball_state_bit_size)
+    # inclusive
+    for i in range(ball_state_bit_size):
+      s_angle = start_angle + i * interval
+      e_angle = start_angle + (i + 1) * interval
+      if overlap((angle_minus, angle_plus), (s_angle, e_angle)):
+        bits[i] = 1
+
+    #print(self.name, angle_plus, angle_minus, start_angle, bits)
+    return bits
+
+
 class JamesEnv(gym.Env):
   metadata = {'render.modes': ['human']}
   def __init__(self, is_human_input = True):
@@ -77,8 +150,10 @@ class JamesEnv(gym.Env):
     pygame.display.set_caption("James' truncated domain")
 
     self.world = Box2D.b2World()
-    self.robot = Robot(100, 100, 0)
+    self.robot = Robot(100, 100, np.pi/2)
     self.human_pos = (-1, -1)
+
+    self.pink_ball = Ball('pink', self.robot)
     #self.orange_pole_pos = (200, 200)
     #self.green_pole_pos = (400, 200)
 
@@ -134,16 +209,17 @@ class JamesEnv(gym.Env):
       else:
         self.human_pos = (-1, -1)
 
+      self.pink_ball.set_position(self.human_pos)
+      state = self.pink_ball.visualize(self.robot)
+
       self.clock.tick(game_fps_limit)
+
     return state, reward, done, info
 
   def _render(self, mode='human', close=False):
     self.screen.fill(Color.white)
     self.robot.draw(self.screen)
-    #pygame.draw.circle(self.screen, Color.orange, self.orange_pole_pos, robot_diameter, robot_width)
-    #pygame.draw.circle(self.screen, Color.green, self.green_pole_pos, robot_diameter, robot_width)
-    if self.human_pos[0] != -1:
-      pygame.draw.circle(self.screen, Color.pink, self.human_pos, robot_diameter, robot_width)
+    self.pink_ball.draw(self.screen)
 
     pygame.display.flip()
     
@@ -152,7 +228,7 @@ if __name__ == "__main__":
   env = JamesEnv()
   s = env.reset()
   total_reward = 0
-  extended_actions = [[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3]]
+  extended_actions = [[0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1], [2, 2, 2], [3, 3, 3]]
   sub_steps = 0 
   steps = 0
   ea = 0
@@ -166,6 +242,7 @@ if __name__ == "__main__":
       sub_steps = 0
 
     s, r, done, info = env.step(a)
+    print(s)
     env.render()
     total_reward += r
     steps += 1
